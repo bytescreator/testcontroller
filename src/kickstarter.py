@@ -9,8 +9,13 @@ from MessageTransport import MessageTransportServer
 async def start_server():
     dispatcher = MessageDispatcher()
 
-    x = MessageTransportServer(dispatcher, 8000) # Inherits Controller and calls functions
-    await x.server
+    while True:
+        try:
+            x = MessageTransportServer(dispatcher, 8000) # Inherits Controller and calls functions
+            await x.server_task
+        except asyncio.exceptions.CancelledError:
+            await x.stop_message_server()
+            return
 
 def StartController():
     asyncio.run(start_server())
@@ -18,9 +23,6 @@ def StartController():
 class MessageDispatcher:
     def __init__(self):
         logging.info('dispatcher ayarlanıyor...')
-
-    async def pong(data, reader, writer):
-        print(data)
 
     def abort(self):
         print('*abort*')

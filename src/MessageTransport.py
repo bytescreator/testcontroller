@@ -23,15 +23,25 @@ class MessageTransportServer:
         self.__port = port
         self.__msg_schema = MessageSchema()
 
-        self.server = asyncio.create_task(self.start_server())
+        self.server_task = asyncio.create_task(self.start_server())
 
     def __async_error_handle(func):
         @wraps(func)
         async def tmp(self, *args, **kwargs):
             try:
                 return await func(self, *args, **kwargs)
+
+            except asyncio.exceptions.CancelledError:
+                self.__dispatcher.abort()
+                await self.stop_message_server()
+
             except:
-                logging.exception('Mesaj alımı esnasında hata operasyonlar sıfırlanıyor...')
+                if len(args) > 0 and isinstance(args[1], asyncio.StreamWriter):
+                    args[1].close()
+                    await args[1].wait_closed()
+
+                logging.debug('Mesaj alımı esnasında hata operasyonlar sıfırlanıyor...', exc_info=True)
+                logging.info('Mesaj alımı esnasında hata operasyonlar sıfırlanıyor...')
                 self.__dispatcher.abort()
 
         return tmp
@@ -42,7 +52,8 @@ class MessageTransportServer:
             try:
                 return func(self, *args, **kwargs)
             except:
-                logging.exception('Mesaj alımı esnasında hata operasyonlar sıfırlanıyor...')
+                logging.debug('Mesaj alımı esnasında hata operasyonlar sıfırlanıyor...', exc_info=True)
+                logging.info('Mesaj alımı esnasında hata operasyonlar sıfırlanıyor...')
                 self.__dispatcher.abort()
 
         return tmp
@@ -59,52 +70,64 @@ class MessageTransportServer:
         client_id = uuid.uuid4().hex
         logging.info(f'Yeni Bağlantı, uuid: {client_id}')
         try:
-            while (not writer.is_closing()) and self.check_ping(client_id):
-                data=await reader.read()
-                logging.debug(f'Mesaj alındı. raw: {data}')
-
+            while self.check_ping(client_id, reader, writer):
+                data=await reader.readline()
                 data=self.__msg_schema.load(json.loads(data))
-                logging.debug(f'Mesaj alındı. {data["type"]} {data["msg"]}')
+                logging.debug(f'Mesaj alındı. {data["type"]} {data.get("msg")}')
 
                 if not hasattr(self.__dispatcher, data['type']):
                     if hasattr(self, data['type']):
-                        x=json.dumps(getattr(self.__dispatcher, data['type'])(data['msg'], reader, writer, client_id=client_id))
+                        x=json.dumps(getattr(self, data['type'])(data.get('msg'), reader, writer, client_id=client_id)).encode('utf-8')
                         if not x is None:
                             writer.write(x)
                             await writer.drain()
                             continue
 
                     else:
-                        writer.write({'type': 'error', 'msg': 'This message type is not implemented.'})
+                        self.__dispatcher.abort()
+                        logging.warning('İmplemente edilmemiş mesaj tipi, hata olmasına karşılık operasyonlar durduruldu.')
+                        writer.write(json.dumps({'type': 'error', 'msg': 'This message type is not implemented.'}).encode('utf-8'))
                         await writer.drain()
                         continue
 
-                x=json.dumps(getattr(self.__dispatcher, data['type'])(data['msg'], reader, writer, client_id=client_id))
+                x=json.dumps(getattr(self.__dispatcher, data['type'])(data['msg'], reader, writer, client_id=client_id)).encode('utf-8')
                 if not x is None:
                     writer.write(x)
                     await writer.drain()
 
-        except Exception as e:
-            logging.exception('conn error')
-            await writer.drain()
+            logging.debug(f'{client_id} bağlantı kapatılıyor')
             writer.close()
 
-    def ping(self, client_id, *args, **kwargs):
+        except ConnectionResetError:
+            logging.warning(f'conn reset {client_id}')
+            self.__clients.pop(client_id)
+
+    def ping(self, *args, **kwargs):
+        client_id = kwargs['client_id']
+
         x=int(time.time()*1000)
-        self.__clients.update({client_id: x})
+        self.__clients.update({client_id: (x, args[1], args[2])})
         return {'type': 'pong', 'time': x}
 
-    def check_ping(self, client_id):
+    def check_ping(self, client_id, reader, writer):
         if self.__clients.get(client_id) is None:
-            self.ping(None, None, None)
+            self.ping(None, reader, writer, client_id=client_id)
             return True
 
-        if (self.__clients.get(client_id) < int(time.time()*1000)-PING_TIMEOUT):
-            logging.debug(f'{client_id} dropped out ping.')
+        if (self.__clients.get(client_id)[0] < int(time.time()*1000)-PING_TIMEOUT):
+            logging.debug(f'{client_id} ping e cevap vermedi.')
             return False
 
-    def stop_message_server(self):
-        self.server.cancel()
+        return True
+
+    async def stop_message_server(self):
+        logging.info('Stopping server')
+        for client in self.__clients:
+            self.__clients[client][2].close()
+            await self.__clients[client][2].wait_closed()
+
+        self.server.close()
+        self.server_task.cancel()
 
 class MessageTransportClient:
     def __init__(self, ip, port):
