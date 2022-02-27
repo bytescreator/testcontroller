@@ -1,9 +1,9 @@
 import sys
 
-if sys.argv[1] == 'gui':
-    import gui
+if sys.argv[1] == 'cli':
+    import cli
 
-    gui.StartGUI()
+    cli.StartCLI()
 
 elif sys.argv[1] == 'rpimode':
     import kickstarter
