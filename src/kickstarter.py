@@ -11,7 +11,7 @@ async def start_server():
 
     while True:
         try:
-            x = MessageTransportServer(dispatcher, 8000) # Inherits Controller and calls functions
+            x = MessageTransportServer(dispatcher, 8000)
             await x.server_task
         except asyncio.exceptions.CancelledError:
             await x.stop_message_server()
@@ -26,3 +26,18 @@ class MessageDispatcher:
 
     def abort(self):
         print('*abort*')
+
+    def movement_forward(self):
+        pass
+
+    def movement_backward(self):
+        pass
+
+    def movement_left(self):
+        pass
+
+    def movement_right(self):
+        pass
+
+    def get_stat(self):
+        pass
