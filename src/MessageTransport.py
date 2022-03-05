@@ -85,41 +85,25 @@ class MessageTransportServer:
                             logging.debug('Kod çalıştırırken hata, hataya karşılık operasyonlar durduruldu.', exc_info=True)
                             logging.info('Kod çalıştırırken hata, hataya karşılık operasyonlar durduruldu.')
                             self.__dispatcher.abort()
-                            writer.write(json.dumps({'type': 'error', 'msg': str(e)}))
-                            await writer.drain()
-
-                            continue
-
-                        if not x is None:
-                            writer.write(x)
-                            await writer.drain()
-                        else:
-                            writer.write('\n')
-                            await writer.drain()
-                        
-                        continue
+                            x=json.dumps({'type': 'error', 'msg': str(e)})
 
                     else:
                         self.__dispatcher.abort()
                         logging.warning('İmplemente edilmemiş mesaj tipi, hata olmasına karşılık operasyonlar durduruldu.')
-                        writer.write(json.dumps({'type': 'error', 'msg': 'This message type is not implemented.'}).encode('utf-8'))
-                        await writer.drain()
-                        continue
+                        x=json.dumps({'type': 'error', 'msg': 'This message type is not implemented.'}).encode('utf-8')
 
-                try:
-                    x=json.dumps(getattr(self.__dispatcher, data['type'])(data['msg'], reader, writer, client_id=client_id)).encode('utf-8')
-                except Exception as e:
-                    self.__dispatcher.abort()
-                    writer.write(json.dumps({'type': 'error', 'msg': str(e)}))
-                    await writer.drain()
-
-                    continue
+                else:
+                    try:
+                        x=json.dumps(await getattr(self.__dispatcher, data['type'])(data['msg'], reader, writer, client_id=client_id)).encode('utf-8')
+                    except Exception as e:
+                        self.__dispatcher.abort()
+                        x = json.dumps({'type': 'error', 'msg': str(e)})
 
                 if not x is None:
                     writer.write(x)
                     await writer.drain()
                 else:
-                    writer.write('\n')
+                    writer.write('{}\n')
                     await writer.drain()
 
             logging.debug(f'{client_id} bağlantı kapatılıyor')
@@ -165,7 +149,7 @@ class MessageTransportClient:
         self.__msg_schema = MessageSchema()
         self.ping_task = asyncio.create_task(self.pinger())
 
-    async def init_clients(self):
+    async def init_client(self):
         self.reader, self.writer = await asyncio.open_connection(
             ip, port
         )

@@ -1,4 +1,7 @@
+from functools import wraps
+
 import time
+import threading
 
 #import pigpio
 
@@ -32,70 +35,95 @@ def _bezier_softener(p1x: float, p1y: float, p2x: float, p2y: float, steps:int=5
 
     return _bezier, steps, exec_time
 
-PWM_FREQ = 10^5 # 100kHz
-PIGPIO_MAX_DUTY=100000
+PWM_FREQ = 20000 # 20kHz
+PIGPIO_MAX_DUTY=1000
 
 BEZIER_P1 = (0.6 , 0.00)
 BEZIER_P2 = (0.67, 0.61)
 
-class DriveMotorManager:
-    def __init__(self, l_gpio, r_gpio, softener_func=_bezier_softener(BEZIER_P1[0], BEZIER_P1[1], BEZIER_P2[0], BEZIER_P2[1])):
+class PWMMotorManager:
+    def __init__(self, gpio, softener_func=_bezier_softener(BEZIER_P1[0], BEZIER_P1[1], BEZIER_P2[0], BEZIER_P2[1])):
         self.gpio_driver = pigpio.pi()
         self.softener = softener_func[0]
         self.softener_stepping = softener_func[1]
         self.softener_exec_time = softener_func[2]
 
-        self.__left_duty_prev=0
+        self.__duty_prev = 0
 
-        self.__left_duty = 0
-        self.__right_duty = 0
+        self.__duty = 0
 
-        self.left_gpio = l_gpio
-        self.right_gpio = r_gpio
+        self.gpio = gpio
 
+        self.gpio_driver.set_mode(self.gpio, pigpio.OUTPUT)
+        self.gpio_driver.set_PWM_frequency(self.gpio, PWM_FREQ)
+        self.gpio_driver.set_PWM_range(self.gpio, PIGPIO_MAX_DUTY)
+
+        self.__stop_immediate = False
+        self.__motor_mutex = threading.Lock()
+
+    def __error_handle(func):
+        @wraps(func)
+        def tmp(self, *args, **kwargs):
+            try:
+                return func(self, *args, **kwargs)
+            except:
+                self.stop_immediate()
+                self.__stop_gpio()
+                raise
+
+        return tmp
+
+    def __stop_gpio(self):
+        """
+        Method to use when something wrong with setting the gpio output happens.
+        Kills all outputs.
+        """
+
+        pass
+
+    @__error_handle
     def __update_motor_dutycycle(self):
+        self.__motor_mutex.acquire()
         if not self.softener is None:
-            softeners=zip(
-                self.softener(self.__left_duty_prev, self.__left_duty),
-                self.softener(self.__right_duty_prev, self.__right_duty)
-            )
+            for duty in self.softener(self.__duty_prev, self.__duty):
+                if not self.__stop_immediate:
+                    assert self.gpio_driver.set_PWM_dutycycle(self.gpio, duty) == 0
+                    self.__duty = duty
 
-            for duty_l, duty_r in softeners:
-                assert self.gpio_driver.hardware_PWM(self.left_gpio, PWM_FREQ, duty_l) == 0
-                assert self.gpio_driver.hardware_PWM(self.right_gpio, PWM_FREQ, duty_r) == 0
-                time.sleep(( abs( self.__left_duty-self.__left_duty_prev + self.__right_duty-self.__right_duty_prev ) / 2 
-                    / PIGPIO_MAX_DUTY ) * self.softener_exec_time / self.softener_stepping )
+                    time.sleep((abs(self.__duty-self.__duty_prev) / PIGPIO_MAX_DUTY ) * self.softener_exec_time / self.softener_stepping )
+                else:
+                    self.__stop_immediate = False
+                    self.__motor_mutex.release()
+                    return
 
         else:
-            assert self.gpio_driver.hardware_PWM(self.left_gpio, PWM_FREQ, self.__left_duty) == 0
-            assert self.gpio_driver.hardware_PWM(self.right_gpio, PWM_FREQ, self.__right_duty) == 0
+            assert self.gpio_driver.set_PWM_dutycycle(self.gpio, self.__duty) == 0
+            self.__motor_mutex.release()
+
+        self.__motor_mutex.release()
 
     def stop_drive(self):
-        self.__left_duty = 0
-        self.__right_duty = 0
+        self.__duty = 0
         self.__update_motor_dutycycle()
 
-    @property
-    def left_duty(self):
-        return self.__left_duty
+    def stop_immediate(self):
+        self.__stop_immediate = True
 
-    @left_duty.setter
-    def left_duty(self, val):
-        if isinstance(val, int):
-            self.__left_duty = val
-            self.__update_motor_dutycycle()
-        else:
-            raise ValueError('left_power should be an integer.')
-    
     @property
-    def right_duty(self):
-        return self.__right_duty
+    def duty(self):
+        return self.__duty
 
-    @right_duty.setter
-    def right_duty(self, val):
+    @duty.setter
+    def duty(self, val):
         if isinstance(val, int):
-            self.__left_duty = val
+            if val > PIGPIO_MAX_DUTY or val < 0:
+                self.stop_immediate()
+                raise ValueError('Invalid dutycycle. min 0, max %s' % PIGPIO_MAX_DUTY)
+
+            self.__duty_prev = self.__duty
+            self.__duty = val
             self.__update_motor_dutycycle()
+
         else:
-            raise ValueError('left_power should be an integer.')
-    
+            self.stop_immediate()
+            raise ValueError('duty should be an integer.')
